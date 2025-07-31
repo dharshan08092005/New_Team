@@ -24,6 +24,7 @@ app = FastAPI(title="PDF Bot API")
 document_cache = TTLCache(maxsize=100, ttl=3600)  # 1 hour
 qa_cache = TTLCache(maxsize=1000, ttl=1800)  # 30 minutes
 
+
 # HTTP client with connection pooling
 http_client = httpx.AsyncClient(
     timeout=30.0,
