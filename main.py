@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from utils.pdf_utils import extract_text_from_pdf, chunk_text
 from utils.embed_utils import insert_into_pinecone, search_similar_chunks
@@ -20,10 +21,23 @@ chat_model = genai.GenerativeModel('gemini-2.5-flash')
 
 app = FastAPI(title="PDF Bot API")
 
+# Authentication
+security = HTTPBearer()
+AUTH_TOKEN = os.getenv("AUTHORIZE_TOKEN")
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)):
+    """Verify the authentication token"""
+    if credentials.credentials != AUTH_TOKEN:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return credentials.credentials
+
 # Caching
 document_cache = TTLCache(maxsize=100, ttl=3600)  # 1 hour
 qa_cache = TTLCache(maxsize=1000, ttl=1800)  # 30 minutes
-
 
 # HTTP client with connection pooling
 http_client = httpx.AsyncClient(
@@ -139,32 +153,48 @@ async def process_question_async(question: str, content_hash: str) -> str:
             return "Sorry, no relevant information found."
 
         prompt = f"""
-You are an expert insurance document analyst. Your task is to extract accurate, complete, and policy-specific answers to user questions using only the information provided in the document context.
+You are an expert insurance document analyst. Your task is to provide clear, definitive answers to user questions using only the information provided in the document context.
 
-Output Guidelines:
+Critical Instructions:
 
-1. Answer Style:
-   - Use clear, plain English in a formal tone.
-   - Prefer single-line summaries when possible.
-   - Give answer in one sentence and add detils like excemptions if available.
-   - Specicfy who is beneficial fron the policy if asked in question and available in document.
-   - Expand only to list specific clauses or conditions using bullets or numbering.
-   - Avoid paragraph-style explanations or formatting (e.g., bold, italics).
+1. Answer Format:
+   - Write in simple, professional language that sounds authoritative and helpful.
+   - Provide complete answers in exactly 1-2 sentences - no more, no less.
+   - For Yes/No questions, always start with "Yes" or "No" followed by the explanation.
+   - For definition questions, provide the definition directly without prefacing words.
+   - For "what is" questions, state the answer definitively (e.g., "The waiting period is X" not "There is a waiting period of X").
+   - Give each answer in a new line
 
-2. Content Requirements:
-   - Each answer must be informative, self-contained, and specific to the policy.
-   - Include eligibility criteria, waiting periods, limits, conditions, and coverage caps if mentioned.
-   - Do not make assumptions or infer information beyond what is stated in the context.
+2. Content Precision:
+   - Include ALL relevant numbers, time periods, percentages, and monetary amounts.
+   - Mention key conditions and eligibility requirements naturally within the main sentence.
+   - When multiple related points exist, integrate them into one flowing sentence using connecting words.
+   - Always specify who benefits (e.g., "insured person", "female insured person") when relevant.
 
-3. Handling Partial or Missing Information:
-   - If only part of the answer is available, extract the relevant portion and start the response with:
-     "Partially covered:"
-   - If no relevant answer is found, respond exactly with:
-     "No relevant information found in the document."
+3. Language Transformation Rules:
+   - Change "expenses are excluded" → "there is a waiting period"
+   - Change "coverage is not available" → "grace period is provided"  
+   - Change "the policy covers" → more specific language like "the policy reimburses" or "the policy indemnifies"
+   - Avoid negative framing when positive framing conveys the same information better.
 
-4. Document Reading Approach:
-   - Read the document from start to end carefully before answering.
-   - Use only the provided context; external or general knowledge must not be used.
+4. Specific Response Patterns:
+   - Grace period: "A grace period of [X] days is provided for premium payment after the due date..."
+   - Waiting periods: "There is a waiting period of [X] months/years for [condition]..."
+   - Coverage confirmation: "Yes, the policy covers/reimburses [benefit] provided [conditions]..."
+   - Definitions: "[Term] is defined as [definition with specific criteria]..."
+   - Limits: "Yes, [benefit] is capped at [X]% of [basis] and [additional details]..."
+
+5. Information Mining:
+   - Search thoroughly through the entire context before concluding information is missing.
+   - Look for information under different headings, synonyms, and related terms.
+   - Only use "No relevant information found in the document." as a last resort.
+   - If partial information exists, provide what is available rather than saying nothing is found.
+
+6. Quality Standards:
+   - Every answer must be self-contained and complete.
+   - Include the most important details first, then supporting information.
+   - Ensure answers sound confident and authoritative, not tentative.
+   - Use specific numbers and exact terms from the document.
 
 Context:
 {context}
@@ -182,7 +212,7 @@ Answer:"""
     return answer
 
 @app.post("/hackrx/run")
-async def hackrx_run(request: HackRXRequest):
+async def hackrx_run(request: HackRXRequest, token: str = Depends(verify_token)):
     try:
         document_source = request.documents.strip()
         questions = request.questions
@@ -235,6 +265,11 @@ async def hackrx_run(request: HackRXRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# Health check endpoint (no auth required)
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
     
 @app.on_event("shutdown")
 async def shutdown_event():
