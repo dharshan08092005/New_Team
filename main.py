@@ -19,7 +19,7 @@ from functools import lru_cache
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 chat_model = genai.GenerativeModel('gemini-2.5-flash')
 
-app = FastAPI(title="PDF Bot API")
+app = FastAPI(title="PDF Bot API",root_path="/api/v1")
 
 # Authentication
 security = HTTPBearer()
